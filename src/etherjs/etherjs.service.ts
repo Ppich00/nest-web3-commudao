@@ -1,17 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Contract, Numbers, Web3 } from 'web3';
 import { abiDungeonCU, addressCU } from '../abi/abiDungeonCU';
 import { abiAmmyBBQ, addressAmmyBBQ } from '../abi/ammyBBQ';
 import {
+  catchError,
   concatMap,
   delay,
   EMPTY,
   expand,
   finalize,
   from,
+  iif,
   map,
+  mergeMap,
+  Observable,
   of,
-  Subject,
   switchMap,
   tap,
   zip,
@@ -19,16 +22,57 @@ import {
 import { ethers } from 'ethers';
 import { Cron, CronExpression, SchedulerRegistry } from '@nestjs/schedule';
 import * as process from 'process';
-import { sendSignedTransaction } from '../util/sendSignedTransaction';
+import { abiBbqTokenAddress, bbqTokenAddress } from '../abi/bbqToken';
+import { jazziCUAbi, jazziCUAddress } from '../abi/jazziCU';
+
+interface ntfEquip {
+  characterId: string;
+  refuelAt: number;
+  isStaked: boolean;
+  gasOut: Date;
+  allPow: number;
+}
 
 @Injectable()
 export class EtherjsService {
+  logger = Logger;
   web3: Web3;
-  sendSignedTransaction$ = new Subject();
+  dungeonCUContract: Contract<typeof abiDungeonCU>;
+  bbqTokenContract: Contract<typeof abiBbqTokenAddress>;
+  ammyBBQContract: Contract<typeof abiAmmyBBQ>;
+  jazziCUContract: Contract<typeof jazziCUAbi>;
+  nftEquip$ = new Observable<ntfEquip>();
 
   constructor(private readonly schedulerRegistry: SchedulerRegistry) {
     this.web3 = new Web3('https://rpc-l1.jibchain.net/');
-    // this.sendSignedTransaction$.pipe(sendSignedTransaction());
+    this.dungeonCUContract = new this.web3.eth.Contract(
+      abiDungeonCU,
+      '0x42F5213C7b6281FC6fb2d6F10576F70DB0a4C841',
+    );
+    this.bbqTokenContract = new this.web3.eth.Contract(
+      abiBbqTokenAddress,
+      bbqTokenAddress,
+    );
+    this.ammyBBQContract = new this.web3.eth.Contract(
+      abiAmmyBBQ,
+      addressAmmyBBQ,
+    );
+    this.jazziCUContract = new this.web3.eth.Contract(
+      jazziCUAbi,
+      jazziCUAddress,
+    );
+
+    this.nftEquip$ = from(
+      this.dungeonCUContract.methods.nftEquip(addressCU).call(),
+    ).pipe(
+      map((v: any) => ({
+        characterId: v.characterId,
+        refuelAt: Number(v.refuelAt),
+        isStaked: v.isStaked,
+        gasOut: new Date(Number(v.refuelAt) * 1000 + 3600 * 1000),
+        allPow: v.allPow,
+      })),
+    );
   }
 
   getBalance() {
@@ -38,57 +82,82 @@ export class EtherjsService {
   }
 
   sign() {
-    const contact = new this.web3.eth.Contract(
-      abiDungeonCU,
-      '0x42F5213C7b6281FC6fb2d6F10576F70DB0a4C841',
-    );
-    return this.mine(contact, null);
+    return this.mine();
   }
 
   refuelGas() {
-    const contact = new this.web3.eth.Contract(
-      abiDungeonCU,
-      '0x42F5213C7b6281FC6fb2d6F10576F70DB0a4C841',
-    );
-
     const id = 1;
-    return zip(
-      of(contact.methods.refuel(id)),
-      from(this.web3.eth.getGasPrice()),
-    ).pipe(
-      switchMap((contactMethod) => {
-        return from(
-          this.web3.eth.accounts.signTransaction(
-            {
-              data: contactMethod[0].encodeABI(),
-              from: process.env.ADDRESS,
-              gasPrice: ethers.parseUnits('1.500000007', 'gwei'),
-              gas: this.web3.utils.toHex(100000),
-              to: contact.options.address,
-              value: '0x0',
-            },
-            process.env.PRIVATE_KEY,
+
+    return this.nftEquip$.pipe(
+      // tap(console.log),
+      mergeMap((value) => {
+        return iif(
+          () =>
+            value.isStaked || (value.gasOut <= new Date() && !!value.allPow),
+          // ()=>true,
+          this.getResource().pipe(
+            switchMap((resourceToken) => {
+              if (resourceToken < 500) {
+                // TODO buy resource
+                console.log('resource not enough');
+                return of('resource not enough');
+              }
+              return zip([
+                of(this.dungeonCUContract.methods.refuel(id)),
+                from(this.web3.eth.getGasPrice()),
+              ]).pipe(
+                tap(console.log),
+                switchMap((contactMethod) => {
+                  return from(
+                    this.web3.eth.accounts.signTransaction(
+                      {
+                        data: contactMethod[0].encodeABI(),
+                        from: process.env.ADDRESS,
+                        gasPrice: ethers.parseUnits('1.500000007', 'gwei'),
+                        gas: this.web3.utils.toHex(100000),
+                        to: this.dungeonCUContract.options.address,
+                        value: '0x0',
+                      },
+                      process.env.PRIVATE_KEY,
+                    ),
+                  ).pipe(
+                    switchMap((sign) => {
+                      console.log('send sign refuel');
+                      return from(
+                        this.web3.eth.sendSignedTransaction(
+                          sign.rawTransaction,
+                        ),
+                      );
+                    }),
+                    tap(() => {
+                      console.log('refuel success');
+                    }),
+                    map(() => of('refuel success')),
+                  );
+                }),
+              );
+            }),
           ),
-        ).pipe(
-          switchMap((sign) => {
-            return from(
-              this.web3.eth.sendSignedTransaction(sign.rawTransaction),
-            );
-          }),
-          tap((v) => {
-            console.log(v);
-          }),
+          of('nft is staking').pipe(tap(() => console.log('nft is staking'))),
         );
       }),
     );
   }
 
-  mine(contact: Contract<any>, characterId) {
+  getResource() {
+    return from(
+      this.bbqTokenContract.methods
+        .balanceOf(process.env.ADDRESS)
+        .call<Numbers>(),
+    ).pipe(map((v) => Number(this.web3.utils.fromWei(v, 'ether'))));
+  }
+
+  mine() {
     const id = '0';
     return zip(
-      of(contact.methods.unstake(id)),
+      of(this.dungeonCUContract.methods.unstake(id)),
       from(this.web3.eth.getGasPrice()),
-      of(contact.methods.unstake(id).estimateGas()),
+      of(this.dungeonCUContract.methods.unstake(id).estimateGas()),
     ).pipe(
       switchMap((encodeABI) => {
         return from(
@@ -98,7 +167,7 @@ export class EtherjsService {
               from: '0x666f19299a0b7e1ef6cd1b42a25b0a22449872e7',
               gasPrice: this.web3.utils.toHex(encodeABI[1]),
               gas: 75000,
-              to: contact.options.address,
+              to: this.dungeonCUContract.options.address,
               value: '0x0',
             },
             process.env.PRIVATE_KEY,
@@ -119,47 +188,42 @@ export class EtherjsService {
     );
   }
 
-  @Cron('*/2 * * * *')
+  @Cron(CronExpression.EVERY_10_MINUTES)
   readContact() {
-    const contact = new this.web3.eth.Contract(
-      abiDungeonCU,
-      '0x42F5213C7b6281FC6fb2d6F10576F70DB0a4C841',
-    );
     console.log('start cron job mine :', new Date());
-    from(contact.methods.nftEquip(addressCU).call())
+    this.nftEquip$
       .pipe(
-        map((v: any) => ({
-          characterId: v.characterId,
-          refuelAt: Number(v.refuelAt),
-          isStaked: v.isStaked,
-          gasOut: new Date(Number(v.refuelAt) * 1000 + 3600 * 1000),
-        })),
         switchMap((value) => {
           console.log('calculating...');
           if (value.isStaked) {
             if (value.gasOut <= new Date()) {
               console.log('ready for mine');
-              return this.mine(contact, value.characterId);
-            } else {
-              if (this.schedulerRegistry.doesExist('timeout', 'mine')) {
-                const timeout = this.schedulerRegistry.getTimeout('mine');
+              if (this.schedulerRegistry.doesExist('timeout', 'refuelGas')) {
+                const timeout = this.schedulerRegistry.getTimeout('refuelGas');
                 if (timeout) {
-                  this.schedulerRegistry.deleteTimeout('mine');
+                  this.schedulerRegistry.deleteTimeout('refuelGas');
+                }
+              }
+              this.refuelGas().subscribe();
+              return of('ready for mine');
+            } else {
+              if (this.schedulerRegistry.doesExist('timeout', 'refuelGas')) {
+                const timeout = this.schedulerRegistry.getTimeout('refuelGas');
+                if (timeout) {
+                  this.schedulerRegistry.deleteTimeout('refuelGas');
                 }
               }
               // register schedule
-              this.schedulerRegistry.addTimeout(
-                'mine',
-                setTimeout(() => {
-                  this.mine(contact, value.characterId);
-                }, value.gasOut.getTime() - new Date().getTime()),
-              );
+              const timeOut = setTimeout(() => {
+                console.log('time for mine');
+                this.refuelGas().subscribe();
+              }, value.gasOut.getTime() - new Date().getTime());
+              this.schedulerRegistry.addTimeout('refuelGas', timeOut);
               console.log(
                 `wait ${
                   (value.gasOut.getTime() - new Date().getTime()) / 1000 / 60
                 } minute for mine`,
               );
-              console.log(this.schedulerRegistry.getTimeouts());
               return of(
                 `wait ${
                   (value.gasOut.getTime() - new Date().getTime()) / 1000 / 60
@@ -171,6 +235,10 @@ export class EtherjsService {
             return of('not stake');
           }
         }),
+        catchError((e) => {
+          console.error(e);
+          return EMPTY;
+        }),
         finalize(() => {
           console.log('end processed');
         }),
@@ -179,8 +247,10 @@ export class EtherjsService {
     return ';';
   }
 
-  buyResource() {
-    const contact = new this.web3.eth.Contract(abiAmmyBBQ, addressAmmyBBQ);
+  estimateResource(
+    resource: number = 500,
+    contact: Contract<any> = this.ammyBBQContract,
+  ) {
     return zip(
       from(contact.methods.getReserveCMJ().call<Numbers>()),
       from(contact.methods.getReserveToken().call<Numbers>()),
@@ -191,11 +261,11 @@ export class EtherjsService {
             .getAmountOfTokens(10 ** 18, value[1], value[0])
             .call<Numbers>(),
         ).pipe(
-          map((price) => 500 * Number(ethers.formatEther(price))),
+          map((price) => resource * Number(ethers.formatEther(price))),
           concatMap((price) => {
             return of(price).pipe(
               expand((token) => {
-                console.log('token ', token);
+                this.logger.log('token %s', token);
                 return from(
                   contact.methods
                     .getAmountOfTokens(
@@ -206,13 +276,12 @@ export class EtherjsService {
                     .call<Numbers>(),
                 ).pipe(
                   switchMap((bbq) => {
-                    if (Number(ethers.formatEther(bbq)) < 500) {
+                    if (Number(ethers.formatEther(bbq)) < resource) {
                       token = Number((token * (0.5 / 100 + 1)).toFixed(7));
                       console.log(token, ethers.formatEther(bbq));
                       return of(token);
                     }
                     console.log(ethers.formatEther(bbq));
-
                     return EMPTY;
                   }),
                   delay(200),
@@ -222,12 +291,7 @@ export class EtherjsService {
           }),
         );
       }),
-
-      // concatMap((arr) => {
-      //   this.web3.utils.fromWei(arr[2], 'ether');
-      //   return from(contact.methods.getAmountOfTokens().call());
-      // }),
+      map((value) => `${resource} token = ${value} CMJ`),
     );
-    // return from(contact.methods.getReserveCMJ().call())
   }
 }

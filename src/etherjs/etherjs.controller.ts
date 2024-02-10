@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { EtherjsService } from './etherjs.service';
 
 @Controller('etherjs')
@@ -15,18 +15,23 @@ export class EtherjsController {
     return this.etherjsService.readContact();
   }
 
-  @Get('buyResource')
-  buyResource() {
-    return this.etherjsService.buyResource();
+  @Get('estimateResource')
+  estimateResource(@Param('resource') resource) {
+    return this.etherjsService.estimateResource(resource);
   }
 
   @Get('sign')
-  sign(){
+  sign() {
     return this.etherjsService.sign();
   }
 
   @Get('refuelGas')
-  refuelGas(){
+  refuelGas() {
     return this.etherjsService.refuelGas();
+  }
+
+  @Get('getResource')
+  getResource() {
+    return this.etherjsService.getResource();
   }
 }
