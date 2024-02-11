@@ -15,8 +15,8 @@ export class EtherjsController {
     return this.etherjsService.readContact();
   }
 
-  @Get('estimateResource')
-  estimateResource(@Param('resource') resource) {
+  @Get('estimateResource/:resource')
+  estimateResource(@Param('resource') resource: number = 500) {
     return this.etherjsService.estimateResource(resource);
   }
 

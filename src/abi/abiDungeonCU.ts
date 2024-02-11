@@ -661,4 +661,4 @@ export const abiDungeonCU = [
     type: 'function',
   },
 ];
-export const addressCU = '0x666f19299A0b7E1EF6cd1B42a25B0a22449872e7';
+

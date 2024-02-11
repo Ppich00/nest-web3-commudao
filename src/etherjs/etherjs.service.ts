@@ -1,18 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Contract, Numbers, Web3 } from 'web3';
-import { abiDungeonCU, addressCU } from '../abi/abiDungeonCU';
+import { abiDungeonCU } from '../abi/abiDungeonCU';
 import { abiAmmyBBQ, addressAmmyBBQ } from '../abi/ammyBBQ';
 import {
   catchError,
   concatMap,
+  defer,
   delay,
   EMPTY,
+  exhaustMap,
   expand,
   finalize,
   from,
   iif,
   map,
-  mergeMap,
   Observable,
   of,
   switchMap,
@@ -41,7 +42,7 @@ export class EtherjsService {
   bbqTokenContract: Contract<typeof abiBbqTokenAddress>;
   ammyBBQContract: Contract<typeof abiAmmyBBQ>;
   jazziCUContract: Contract<typeof jazziCUAbi>;
-  nftEquip$ = new Observable<ntfEquip>();
+  nftEquip$: Observable<ntfEquip>;
 
   constructor(private readonly schedulerRegistry: SchedulerRegistry) {
     this.web3 = new Web3('https://rpc-l1.jibchain.net/');
@@ -62,8 +63,8 @@ export class EtherjsService {
       jazziCUAddress,
     );
 
-    this.nftEquip$ = from(
-      this.dungeonCUContract.methods.nftEquip(addressCU).call(),
+    this.nftEquip$ = defer(() =>
+      this.dungeonCUContract.methods.nftEquip(process.env.ADDRESS).call(),
     ).pipe(
       map((v: any) => ({
         characterId: v.characterId,
@@ -76,8 +77,15 @@ export class EtherjsService {
   }
 
   getBalance() {
-    return this.web3.eth.getBalance(
-      '0x666f19299A0b7E1EF6cd1B42a25B0a22449872e7',
+    // return this.web3.eth.getBalance(
+    //   '0x666f19299A0b7E1EF6cd1B42a25B0a22449872e7',
+    // );
+    return this.nftEquip$.pipe(
+      map((v) => ({
+        gasOut: v.gasOut,
+        isStaked: v.isStaked,
+        newDate: new Date(),
+      })),
     );
   }
 
@@ -87,10 +95,10 @@ export class EtherjsService {
 
   refuelGas() {
     const id = 1;
-
+    console.debug('star refuel gas');
     return this.nftEquip$.pipe(
       // tap(console.log),
-      mergeMap((value) => {
+      exhaustMap((value) => {
         return iif(
           () =>
             value.isStaked || (value.gasOut <= new Date() && !!value.allPow),
@@ -128,6 +136,7 @@ export class EtherjsService {
                           sign.rawTransaction,
                         ),
                       );
+                      // return of('send sign refuel');
                     }),
                     tap(() => {
                       console.log('refuel success');
@@ -164,7 +173,7 @@ export class EtherjsService {
           this.web3.eth.accounts.signTransaction(
             {
               data: encodeABI[0].encodeABI(),
-              from: '0x666f19299a0b7e1ef6cd1b42a25b0a22449872e7',
+              from: process.env.ADDRESS,
               gasPrice: this.web3.utils.toHex(encodeABI[1]),
               gas: 75000,
               to: this.dungeonCUContract.options.address,
@@ -188,16 +197,17 @@ export class EtherjsService {
     );
   }
 
-  @Cron(CronExpression.EVERY_10_MINUTES)
+  @Cron(CronExpression.EVERY_5_MINUTES)
   readContact() {
     console.log('start cron job mine :', new Date());
     this.nftEquip$
       .pipe(
-        switchMap((value) => {
+        tap(console.log),
+        exhaustMap((value) => {
           console.log('calculating...');
           if (value.isStaked) {
             if (value.gasOut <= new Date()) {
-              console.log('ready for mine');
+              console.debug('ready for mine');
               if (this.schedulerRegistry.doesExist('timeout', 'refuelGas')) {
                 const timeout = this.schedulerRegistry.getTimeout('refuelGas');
                 if (timeout) {
@@ -215,11 +225,11 @@ export class EtherjsService {
               }
               // register schedule
               const timeOut = setTimeout(() => {
-                console.log('time for mine');
+                console.debug('time for mine');
                 this.refuelGas().subscribe();
               }, value.gasOut.getTime() - new Date().getTime());
               this.schedulerRegistry.addTimeout('refuelGas', timeOut);
-              console.log(
+              console.debug(
                 `wait ${
                   (value.gasOut.getTime() - new Date().getTime()) / 1000 / 60
                 } minute for mine`,
@@ -231,7 +241,7 @@ export class EtherjsService {
               );
             }
           } else {
-            console.log('not stake');
+            console.debug('not stake');
             return of('not stake');
           }
         }),
