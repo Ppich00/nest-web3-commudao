@@ -1,9 +1,13 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, OnApplicationBootstrap } from '@nestjs/common';
 import { EtherjsService } from './etherjs.service';
 
 @Controller('etherjs')
-export class EtherjsController {
+export class EtherjsController implements OnApplicationBootstrap {
   constructor(private readonly etherjsService: EtherjsService) {}
+
+  onApplicationBootstrap() {
+    this.etherjsService.readContact();
+  }
 
   @Get()
   getTestEtherJS() {

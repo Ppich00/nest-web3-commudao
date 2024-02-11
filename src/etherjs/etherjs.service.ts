@@ -197,7 +197,7 @@ export class EtherjsService {
     );
   }
 
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_30_MINUTES)
   readContact() {
     console.log('start cron job mine :', new Date());
     this.nftEquip$
@@ -250,7 +250,7 @@ export class EtherjsService {
           return EMPTY;
         }),
         finalize(() => {
-          console.log('end processed');
+          console.log('---------------end processed---------------');
         }),
       )
       .subscribe();
