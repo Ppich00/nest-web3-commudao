@@ -16,6 +16,7 @@ import {
   map,
   Observable,
   of,
+  retry,
   switchMap,
   tap,
   zip,
@@ -214,8 +215,8 @@ export class EtherjsService {
                   this.schedulerRegistry.deleteTimeout('refuelGas');
                 }
               }
-              this.refuelGas().subscribe();
-              return of('ready for mine');
+              return this.refuelGas();
+              // return of('ready for mine');
             } else {
               if (this.schedulerRegistry.doesExist('timeout', 'refuelGas')) {
                 const timeout = this.schedulerRegistry.getTimeout('refuelGas');
@@ -245,6 +246,7 @@ export class EtherjsService {
             return of('not stake');
           }
         }),
+        retry({ count: 3, resetOnSuccess: true }),
         catchError((e) => {
           console.error(e);
           return EMPTY;
